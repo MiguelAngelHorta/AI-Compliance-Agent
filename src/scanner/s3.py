@@ -9,7 +9,7 @@ from src.models import Finding, FindingType, ResourceType, Severity
 
 def scan_s3(session: boto3.Session | None = None) -> list[Finding]:
     """Run all S3 checks and return findings."""
-    client = (session or boto3.Session()).client("s3")
+    client = (session or boto3.Session()).client("s3", verify=False)
     findings: list[Finding] = []
 
     buckets = client.list_buckets().get("Buckets", [])
