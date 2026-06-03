@@ -8,6 +8,7 @@ from typing import Any
 import boto3
 import requests
 
+from src.masking import mask_text
 from src.models import Finding, Severity
 
 
@@ -17,13 +18,19 @@ def execute_actions(
     github_repo: str = "",
     github_token: str = "",
     session: boto3.Session | None = None,
+    mask: bool = True,
 ) -> list[Finding]:
-    """Execute remediation or escalation for each assessed finding."""
+    """Execute remediation or escalation for each assessed finding.
+
+    When ``mask`` is True (the default), resource identifiers are masked in any
+    content sent to GitHub Issues. Disable only when escalating to a private
+    tracker where exposing real names is acceptable.
+    """
     for i, finding in enumerate(findings):
         print(f"  [{i + 1}/{len(findings)}] {finding.title}", file=sys.stderr)
 
         if finding.severity in (Severity.CRITICAL, Severity.HIGH):
-            _escalate(finding, dry_run, github_repo, github_token)
+            _escalate(finding, dry_run, github_repo, github_token, mask)
         elif finding.severity == Severity.MEDIUM:
             _auto_remediate_if_safe(finding, dry_run, session)
         elif finding.severity == Severity.LOW:
@@ -70,6 +77,7 @@ def _escalate(
     dry_run: bool,
     github_repo: str,
     github_token: str,
+    mask: bool = True,
 ) -> None:
     """Escalate high/critical findings to GitHub Issues."""
     if not github_repo or not github_token:
@@ -77,19 +85,35 @@ def _escalate(
         finding.action_taken = "skipped_no_config"
         return
 
-    title = f"[{finding.severity.value.upper()}] {finding.title}"
+    # Mask resource identifiers in anything published to (potentially public)
+    # GitHub Issues. Local console output elsewhere stays unmasked.
+    # Mask the resource name and the ARN's identifying tail (not the whole ARN),
+    # so the ARN skeleton (arn:aws:s3:::<masked>) survives for triage.
+    arn = finding.resource_arn
+    if ":::" in arn:
+        arn_tail = arn.split(":::", 1)[1]
+    elif "/" in arn:
+        arn_tail = arn.rsplit("/", 1)[1]
+    else:
+        arn_tail = ""
+    names = tuple(n for n in (finding.resource_name, arn_tail) if n)
+
+    def m(text: str) -> str:
+        return mask_text(text, names) if mask else text
+
+    title = f"[{finding.severity.value.upper()}] {m(finding.title)}"
 
     controls_str = ", ".join(finding.control_mappings) if finding.control_mappings else "Not yet assessed"
 
     body = (
         f"## Security Finding\n\n"
         f"**Severity:** {finding.severity.value.upper()}\n"
-        f"**Resource:** `{finding.resource_arn}`\n"
+        f"**Resource:** `{m(finding.resource_arn)}`\n"
         f"**Type:** {finding.finding_type.value}\n\n"
-        f"## Description\n\n{finding.description}\n\n"
+        f"## Description\n\n{m(finding.description)}\n\n"
         f"## Controls Violated\n\n{controls_str}\n\n"
-        f"## Recommended Remediation\n\n{finding.remediation or 'See Claude reasoning below.'}\n\n"
-        f"## Claude Reasoning\n\n{finding.claude_reasoning or 'Not yet assessed.'}\n\n"
+        f"## Recommended Remediation\n\n{m(finding.remediation) or 'See Claude reasoning below.'}\n\n"
+        f"## Claude Reasoning\n\n{m(finding.claude_reasoning) or 'Not yet assessed.'}\n\n"
         f"---\n*Created automatically by AI Compliance Agent*"
     )
 

@@ -55,6 +55,7 @@ def run_actions(
     dry_run: bool = True,
     github_repo: str = "",
     github_token: str = "",
+    mask: bool = True,
 ) -> ScanResult:
     """Execute actions on assessed findings."""
     from src.actions import execute_actions
@@ -66,12 +67,15 @@ def run_actions(
     mode = "DRY RUN" if dry_run else "LIVE"
     count = len(result.findings)
     print(f"\n[*] Executing actions ({mode}) on {count} findings...", file=sys.stderr)
+    if not mask:
+        print("[*] ⚠️  Resource masking DISABLED — real identifiers will be published", file=sys.stderr)
 
     result.findings = execute_actions(
         result.findings,
         dry_run=dry_run,
         github_repo=github_repo,
         github_token=github_token,
+        mask=mask,
     )
 
     print("[*] Actions complete", file=sys.stderr)
@@ -115,6 +119,11 @@ def main() -> None:
         "--output", choices=["json", "summary"], default="summary",
         help="Output format (default: summary)",
     )
+    parser.add_argument(
+        "--no-mask", action="store_true",
+        help="Do not mask resource identifiers in GitHub escalations "
+             "(use only with a private tracker)",
+    )
 
     args = parser.parse_args()
 
@@ -141,6 +150,7 @@ def main() -> None:
             dry_run=dry_run,
             github_repo=github_repo,
             github_token=github_token,
+            mask=not args.no_mask,
         )
 
     # Output
