@@ -9,9 +9,9 @@ import boto3
 
 from src.models import Finding, Severity
 
-# Model IDs
-HAIKU = "anthropic.claude-haiku-4-5-20251001-v1:0"
-SONNET = "anthropic.claude-sonnet-4-20250514-v1:0"
+# Model IDs — cross-region inference profile prefix (us.) is required for these models
+HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+SONNET = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 
 # CIS v8 control reference (subset for mapping)
 CIS_CONTROLS: dict[str, str] = {
@@ -64,77 +64,103 @@ SOC2_CRITERIA: dict[str, str] = {
     "SOC2-CC8.1": "Change Management",
 }
 
-TOOLS = [
+# Tool definitions in Converse API format (toolSpec wrapper)
+TOOLS: list[dict[str, Any]] = [
     {
-        "name": "map_to_controls",
-        "description": (
-            "Maps a security finding to relevant compliance framework controls. "
-            "Returns matching controls from CIS v8, NIST 800-53, and SOC 2."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "finding_type": {
-                    "type": "string",
-                    "description": "The type of finding (e.g. overpermissive, unencrypted, public_access, no_mfa, open_port)",
-                },
-                "resource_type": {
-                    "type": "string",
-                    "description": "The AWS resource type (e.g. iam_policy, s3_bucket, security_group)",
-                },
+        "toolSpec": {
+            "name": "map_to_controls",
+            "description": (
+                "Maps a security finding to relevant compliance framework controls. "
+                "Returns matching controls from CIS v8, NIST 800-53, and SOC 2."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "finding_type": {
+                            "type": "string",
+                            "description": "The type of finding (e.g. overpermissive, unencrypted, public_access, no_mfa, open_port)",
+                        },
+                        "resource_type": {
+                            "type": "string",
+                            "description": "The AWS resource type (e.g. iam_policy, s3_bucket, security_group)",
+                        },
+                    },
+                    "required": ["finding_type", "resource_type"],
+                }
             },
-            "required": ["finding_type", "resource_type"],
-        },
+        }
     },
     {
-        "name": "score_risk",
-        "description": (
-            "Assigns a final risk score based on finding context, blast radius, "
-            "and control mappings. Returns critical, high, medium, or low."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "finding_type": {"type": "string"},
-                "resource_type": {"type": "string"},
-                "is_internet_facing": {"type": "boolean", "description": "Whether the resource is exposed to the internet"},
-                "num_controls_violated": {"type": "integer", "description": "Number of compliance controls violated"},
-                "has_sensitive_data": {"type": "boolean", "description": "Whether the resource likely contains sensitive data"},
+        "toolSpec": {
+            "name": "score_risk",
+            "description": (
+                "Assigns a final risk score based on finding context, blast radius, "
+                "and control mappings. Returns critical, high, medium, or low."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "finding_type": {"type": "string"},
+                        "resource_type": {"type": "string"},
+                        "is_internet_facing": {
+                            "type": "boolean",
+                            "description": "Whether the resource is exposed to the internet",
+                        },
+                        "num_controls_violated": {
+                            "type": "integer",
+                            "description": "Number of compliance controls violated",
+                        },
+                        "has_sensitive_data": {
+                            "type": "boolean",
+                            "description": "Whether the resource likely contains sensitive data",
+                        },
+                    },
+                    "required": ["finding_type", "resource_type", "is_internet_facing", "num_controls_violated"],
+                }
             },
-            "required": ["finding_type", "resource_type", "is_internet_facing", "num_controls_violated"],
-        },
+        }
     },
     {
-        "name": "recommend_remediation",
-        "description": "Generates a specific, actionable remediation recommendation for the finding.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "finding_type": {"type": "string"},
-                "resource_type": {"type": "string"},
-                "resource_arn": {"type": "string"},
-                "risk_score": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+        "toolSpec": {
+            "name": "recommend_remediation",
+            "description": "Generates a specific, actionable remediation recommendation for the finding.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "finding_type": {"type": "string"},
+                        "resource_type": {"type": "string"},
+                        "resource_arn": {"type": "string"},
+                        "risk_score": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    },
+                    "required": ["finding_type", "resource_type", "resource_arn", "risk_score"],
+                }
             },
-            "required": ["finding_type", "resource_type", "resource_arn", "risk_score"],
-        },
+        }
     },
     {
-        "name": "log_assessment",
-        "description": "Logs the final assessment with all reasoning, control mappings, risk score, and remediation.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "risk_score": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-                "control_mappings": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of control IDs violated (e.g. CIS-3.11, NIST-SC-28)",
-                },
-                "remediation": {"type": "string", "description": "Specific remediation steps"},
-                "reasoning": {"type": "string", "description": "Full reasoning chain explaining the assessment"},
+        "toolSpec": {
+            "name": "log_assessment",
+            "description": "Logs the final assessment with all reasoning, control mappings, risk score, and remediation.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "risk_score": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                        "control_mappings": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of control IDs violated (e.g. CIS-3.11, NIST-SC-28)",
+                        },
+                        "remediation": {"type": "string", "description": "Specific remediation steps"},
+                        "reasoning": {"type": "string", "description": "Full reasoning chain explaining the assessment"},
+                    },
+                    "required": ["risk_score", "control_mappings", "remediation", "reasoning"],
+                }
             },
-            "required": ["risk_score", "control_mappings", "remediation", "reasoning"],
-        },
+        }
     },
 ]
 
@@ -285,7 +311,7 @@ def assess_finding(
     session: boto3.Session | None = None,
     model_id: str = HAIKU,
 ) -> Finding:
-    """Send a finding to Claude for assessment and return the enriched finding."""
+    """Send a finding to Claude for assessment via Bedrock Converse API."""
     client = (session or boto3.Session()).client(
         "bedrock-runtime", region_name="us-east-1"
     )
@@ -312,25 +338,21 @@ def assess_finding(
         f"Initial Severity: {finding.severity.value}\n"
     )
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": [{"text": user_message}]}]
 
-    # Tool use loop
+    # Tool use loop using Converse API
     max_iterations = 10
     for _ in range(max_iterations):
-        response = client.invoke_model(
+        response = client.converse(
             modelId=model_id,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 2048,
-                "system": system_prompt,
-                "messages": messages,
-                "tools": TOOLS,
-            }),
+            system=[{"text": system_prompt}],
+            messages=messages,
+            toolConfig={"tools": TOOLS},
+            inferenceConfig={"maxTokens": 2048},
         )
 
-        result = json.loads(response["body"].read())
-        stop_reason = result.get("stop_reason", "")
-        content_blocks = result.get("content", [])
+        stop_reason = response["stopReason"]
+        content_blocks = response["output"]["message"]["content"]
 
         messages.append({"role": "assistant", "content": content_blocks})
 
@@ -339,16 +361,18 @@ def assess_finding(
 
         if stop_reason == "tool_use":
             tool_results: list[dict[str, Any]] = []
+
             for block in content_blocks:
-                if block.get("type") == "tool_use":
-                    tool_name = block["name"]
-                    tool_input = block["input"]
+                if "toolUse" in block:
+                    tool_name = block["toolUse"]["name"]
+                    tool_input = block["toolUse"]["input"]
                     tool_result = _execute_tool(tool_name, tool_input)
 
                     tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block["id"],
-                        "content": tool_result,
+                        "toolResult": {
+                            "toolUseId": block["toolUse"]["toolUseId"],
+                            "content": [{"text": tool_result}],
+                        }
                     })
 
                     if tool_name == "log_assessment":
