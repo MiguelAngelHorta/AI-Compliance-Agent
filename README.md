@@ -452,3 +452,106 @@ The README documents the EKS upgrade path: swap Kind for EKS, enable IRSA, apply
 | 7-8   | Lambda + K8s demo            | Free Lambda deploy + local Kind cluster  |
 | 9-10  | Dashboard                    | React compliance dashboard live          |
 | 11-12 | Polish + launch              | README, demo video, LinkedIn post        |
+## Demo
+
+The agent runs in three stages — **scan → reason → act**. Each stage can be run on its own or chained together. The walkthrough below is a representative run against a test AWS account.
+
+> All resource names, account identifiers, IDs, and paths in this section are placeholders. Real values are never committed to this repo.
+
+### 1. Scan
+
+Enumerate IAM, S3, and EC2 with read-only API calls and classify findings by type and severity.
+
+```console
+$ python -m src.main --scan --output summary
+
+[*] Running iam scanner...
+    Found 0 findings
+[*] Running s3 scanner...
+    Found 9 findings
+[*] Running ec2 scanner...
+    Found 1 findings
+
+============================================================
+Scanners: iam, s3, ec2
+Findings: 10
+Severity: {'critical': 3, 'high': 1, 'medium': 0, 'low': 6, 'info': 0}
+============================================================
+
+🔴 [CRITICAL] Bucket 'app.example.com' does not fully block public access
+   Resource: arn:aws:s3:::app.example.com
+   Type: public_access
+
+🟠 [HIGH] Security group 'launch-wizard-1' exposes SSH (port 22) to 0.0.0.0/0
+   Resource: arn:aws:ec2:*:*:security-group/sg-EXAMPLE000000000
+   Type: open_port
+
+🟡 [LOW] Bucket 'example-static-assets' has no access logging
+   Resource: arn:aws:s3:::example-static-assets
+   Type: no_logging
+
+   ... (7 more)
+```
+
+### 2. Reason
+
+Each finding is sent to Claude (via Amazon Bedrock) with a set of tools. The model maps the finding to compliance controls, scores its real risk in context, and proposes a remediation — then logs the full reasoning chain.
+
+```console
+$ python -m src.main --scan --reason --output summary
+
+[*] Assessing 10 findings with Claude...
+  [1/10] Assessing: Bucket 'app.example.com' does not fully block public access...
+    → map_to_controls       CIS-3.3, CIS-4.4 · NIST-AC-3, NIST-SC-7 · SOC2-CC6.1, SOC2-CC6.6
+    → score_risk            critical  (internet-facing, 6 controls violated, likely public data)
+    → recommend_remediation Enable S3 Block Public Access — set all four block settings to true
+    → log_assessment        logged
+  [3/10] Assessing: Bucket 'example-static-assets' does not have versioning enabled...
+    → map_to_controls       CIS-3.4 · NIST-CM-6 · SOC2-CC8.1
+    → score_risk            low  (not internet-facing, single control, no sensitive data)
+    → recommend_remediation Enable versioning to protect against accidental deletion
+    → log_assessment        logged
+  ...
+```
+
+Findings are mapped against **CIS Controls v8**, **NIST 800-53**, and **SOC 2** criteria.
+
+### 3. Act
+
+Low-risk, reversible issues are auto-remediated. Critical findings are escalated to GitHub Issues for human review. Everything else is acknowledged and logged. Actions run in **dry-run mode by default** — `--live` is required to make any real change.
+
+```console
+$ python -m src.main --scan --reason --act --live
+
+[*] Executing actions (LIVE) on 10 findings...
+  [1/10] Bucket 'app.example.com' does not fully block public access
+    🎫 Escalated to GitHub issue #12  (critical — manual review required)
+  [2/10] Bucket 'app.example.com' has no access logging
+    📋 Acknowledged: no_logging
+  [3/10] Bucket 'example-static-assets' does not have versioning enabled
+    ✅ Auto-remediated: no_versioning
+  ...
+[*] Actions complete
+```
+
+| Finding type | Default action |
+|---|---|
+| `no_versioning` | ✅ Auto-remediate (enable versioning) |
+| `unencrypted` | ✅ Auto-remediate (enable SSE) |
+| `public_access` | 🎫 Escalate to GitHub Issues |
+| `open_port` | 🎫 Escalate to GitHub Issues |
+| `no_logging` | 📋 Acknowledge + log |
+
+> **Note:** `--live` performs real changes and opens real GitHub issues that include the affected resource identifiers. Run it against a test account, and point escalations at a **private** repo or tracker so resource names are not published.
+
+### Flags
+
+```console
+--scan                 Run the scanners
+--reason               Send findings to Claude for assessment
+--act                  Execute actions (dry-run unless --live is set)
+--dry-run / --live     Preview actions vs. apply them
+--scanners iam s3 ec2  Limit which scanners run
+--model haiku|sonnet   Choose the Bedrock model
+--output json|summary  Output format
+```
