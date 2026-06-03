@@ -1,7 +1,7 @@
 """IAM scanner: detects overpermissive policies, missing MFA, and stale access keys."""
-
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 import boto3
 
@@ -21,7 +21,7 @@ def scan_iam(session: boto3.Session | None = None) -> list[Finding]:
     return findings
 
 
-def _check_wildcard_policies(client) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_wildcard_policies(client: Any) -> list[Finding]:
     """Find IAM policies with Action: * or Resource: *."""
     findings: list[Finding] = []
     paginator = client.get_paginator("list_policies")
@@ -96,7 +96,7 @@ def _check_wildcard_policies(client) -> list[Finding]:  # type: ignore[no-untype
     return findings
 
 
-def _check_users_without_mfa(client) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_users_without_mfa(client: Any) -> list[Finding]:
     """Find IAM users without MFA enabled."""
     findings: list[Finding] = []
     paginator = client.get_paginator("list_users")
@@ -129,7 +129,7 @@ def _check_users_without_mfa(client) -> list[Finding]:  # type: ignore[no-untype
 
 
 def _check_stale_access_keys(
-    client, max_age_days: int = 90  # type: ignore[no-untyped-def]
+    client: Any, max_age_days: int = 90
 ) -> list[Finding]:
     """Find access keys older than max_age_days."""
     findings: list[Finding] = []
@@ -172,7 +172,7 @@ def _check_stale_access_keys(
     return findings
 
 
-def _check_overpermissive_roles(client) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_overpermissive_roles(client: Any) -> list[Finding]:
     """Find IAM roles with overly broad trust policies."""
     findings: list[Finding] = []
     paginator = client.get_paginator("list_roles")

@@ -60,14 +60,14 @@ class Finding(BaseModel):
     severity: Severity
     title: str
     description: str
-    raw_data: dict = Field(default_factory=dict)  # type: ignore[assignment]
+    raw_data: dict[str, object] = Field(default_factory=dict)
 
     # Populated after Claude reasoning (Phase 2)
     control_mappings: list[str] = Field(default_factory=list)
     claude_reasoning: str = ""
     remediation: str = ""
     action_taken: str = "none"
-    action_details: dict = Field(default_factory=dict)  # type: ignore[assignment]
+    action_details: dict[str, object] = Field(default_factory=dict)
     status: str = "open"
 
 

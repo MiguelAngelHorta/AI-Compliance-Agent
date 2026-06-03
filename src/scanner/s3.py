@@ -1,4 +1,5 @@
 """S3 scanner: detects unencrypted buckets, public access, missing versioning/logging."""
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -25,7 +26,7 @@ def scan_s3(session: boto3.Session | None = None) -> list[Finding]:
     return findings
 
 
-def _check_encryption(client, name: str, arn: str) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_encryption(client: Any, name: str, arn: str) -> list[Finding]:
     """Check if default encryption is enabled."""
     findings: list[Finding] = []
     try:
@@ -50,7 +51,7 @@ def _check_encryption(client, name: str, arn: str) -> list[Finding]:  # type: ig
     return findings
 
 
-def _check_public_access(client, name: str, arn: str) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_public_access(client: Any, name: str, arn: str) -> list[Finding]:
     """Check if Block Public Access is enabled."""
     findings: list[Finding] = []
     try:
@@ -100,7 +101,7 @@ def _check_public_access(client, name: str, arn: str) -> list[Finding]:  # type:
     return findings
 
 
-def _check_versioning(client, name: str, arn: str) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_versioning(client: Any, name: str, arn: str) -> list[Finding]:
     """Check if versioning is enabled."""
     findings: list[Finding] = []
     versioning = client.get_bucket_versioning(Bucket=name)
@@ -124,7 +125,7 @@ def _check_versioning(client, name: str, arn: str) -> list[Finding]:  # type: ig
     return findings
 
 
-def _check_logging(client, name: str, arn: str) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_logging(client: Any, name: str, arn: str) -> list[Finding]:
     """Check if server access logging is enabled."""
     findings: list[Finding] = []
     logging_config = client.get_bucket_logging(Bucket=name)

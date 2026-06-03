@@ -1,4 +1,5 @@
 """EC2 scanner: detects overly permissive security groups."""
+from typing import Any
 
 import boto3
 
@@ -28,7 +29,7 @@ def scan_ec2(session: boto3.Session | None = None) -> list[Finding]:
     return findings
 
 
-def _check_security_groups(client) -> list[Finding]:  # type: ignore[no-untyped-def]
+def _check_security_groups(client: Any) -> list[Finding]:
     """Find security groups with 0.0.0.0/0 on sensitive ports."""
     findings: list[Finding] = []
     paginator = client.get_paginator("describe_security_groups")
@@ -73,7 +74,7 @@ def _evaluate_open_rule(
     from_port: int,
     to_port: int,
     cidr: str,
-    rule: dict,  # type: ignore[type-arg]
+    rule: dict[str, object],
 ) -> list[Finding]:
     """Evaluate a single open security group rule."""
     findings: list[Finding] = []
