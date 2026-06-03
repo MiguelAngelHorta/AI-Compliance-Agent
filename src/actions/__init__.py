@@ -29,9 +29,9 @@ def execute_actions(
     for i, finding in enumerate(findings):
         print(f"  [{i + 1}/{len(findings)}] {finding.title}", file=sys.stderr)
 
-        if finding.severity in (Severity.CRITICAL, Severity.HIGH):
+        if finding.severity == Severity.CRITICAL:
             _escalate(finding, dry_run, github_repo, github_token, mask)
-        elif finding.severity == Severity.MEDIUM:
+        elif finding.severity in (Severity.HIGH, Severity.MEDIUM):
             _auto_remediate_if_safe(finding, dry_run, session)
         elif finding.severity == Severity.LOW:
             _log_acknowledged(finding, dry_run)
