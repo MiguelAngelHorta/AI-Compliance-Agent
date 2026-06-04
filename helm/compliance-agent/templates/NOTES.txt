@@ -1,0 +1,21 @@
+✅ {{ include "compliance-agent.fullname" . }} installed (release: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}).
+
+The agent runs on schedule: {{ .Values.schedule }}
+Mode: {{ if .Values.agent.live }}🔴 LIVE (makes real changes){{ else }}🔍 DRY-RUN (safe — no changes){{ end }}
+Masking: {{ if .Values.agent.mask }}on{{ else }}OFF — real identifiers will be published{{ end }}
+
+Trigger a run immediately (don't wait 6 hours):
+  kubectl create job --from=cronjob/{{ include "compliance-agent.fullname" . }} {{ include "compliance-agent.fullname" . }}-manual -n {{ .Release.Namespace }}
+
+Watch it:
+  kubectl get jobs -n {{ .Release.Namespace }} -w
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
+
+{{- if not .Values.secret.create }}
+
+⚠️  No credentials Secret was created. On a local Kind cluster the agent has no
+    AWS access. Re-install with (LOCAL DEMO ONLY):
+      --set secret.create=true \
+      --set secret.awsAccessKeyId=... --set secret.awsSecretAccessKey=... \
+      --set secret.maskSalt=$(openssl rand -hex 16)
+{{- end }}

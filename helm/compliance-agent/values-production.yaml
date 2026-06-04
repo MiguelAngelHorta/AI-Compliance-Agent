@@ -1,0 +1,39 @@
+# Production overrides for EKS. Documented but not deployed by default.
+# Usage: helm install compliance-agent ./helm/compliance-agent \
+#          -f values-production.yaml --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::ACCOUNT:role/compliance-agent
+
+image:
+  # Point at your ECR repo in production.
+  repository: ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/compliance-agent
+  tag: latest
+  pullPolicy: Always
+
+agent:
+  # Still dry-run by default in prod until you trust it. Flip deliberately.
+  live: false
+  output: json
+
+# No static AWS credentials in production — auth via IRSA.
+secret:
+  create: false
+
+serviceAccount:
+  create: true
+  # IRSA role ARN must be supplied at install:
+  #   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<acct>:role/compliance-agent
+  annotations: {}
+
+metrics:
+  enabled: true
+  pushgatewayUrl: "http://prometheus-pushgateway.monitoring:9091"
+
+networkPolicy:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi

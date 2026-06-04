@@ -131,6 +131,9 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    import time as _time
+    _run_start = _time.monotonic()
+
     # Phase 1: Scan
     result = run_scan(args.scanners)
 
@@ -152,6 +155,10 @@ def main() -> None:
             github_token=github_token,
             mask=not args.no_mask,
         )
+
+    # Phase 4: Metrics (best-effort; no-op unless PUSHGATEWAY_URL is set)
+    from src.metrics import push_metrics
+    push_metrics(result, _time.monotonic() - _run_start)
 
     # Output
     if args.output == "json":

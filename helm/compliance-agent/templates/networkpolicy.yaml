@@ -1,0 +1,38 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "compliance-agent.fullname" . }}
+  labels:
+    {{- include "compliance-agent.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "compliance-agent.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress — this is a batch job, nothing connects to it.
+  ingress: []
+  egress:
+    # DNS resolution.
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS to AWS APIs, Bedrock, and GitHub.
+    # AWS IP ranges are too broad to pin meaningfully, so we scope by port.
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- if .Values.metrics.enabled }}
+    # Prometheus Pushgateway (non-443 port) for the metrics push.
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 9091
+    {{- end }}
+{{- end }}

@@ -1,0 +1,82 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "compliance-agent.fullname" . }}
+  labels:
+    {{- include "compliance-agent.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  concurrencyPolicy: {{ .Values.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .Values.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      backoffLimit: {{ .Values.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            {{- include "compliance-agent.selectorLabels" . | nindent 12 }}
+        spec:
+          serviceAccountName: {{ include "compliance-agent.serviceAccountName" . }}
+          restartPolicy: {{ .Values.restartPolicy }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: agent
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              args:
+                - "--scan"
+                {{- if .Values.agent.reason }}
+                - "--reason"
+                {{- end }}
+                {{- if .Values.agent.act }}
+                - "--act"
+                {{- end }}
+                {{- if .Values.agent.live }}
+                - "--live"
+                {{- end }}
+                {{- if not .Values.agent.mask }}
+                - "--no-mask"
+                {{- end }}
+                {{- if .Values.agent.scanners }}
+                - "--scanners"
+                {{- range .Values.agent.scanners }}
+                - {{ . | quote }}
+                {{- end }}
+                {{- end }}
+                - "--model"
+                - {{ .Values.agent.model | quote }}
+                - "--output"
+                - {{ .Values.agent.output | quote }}
+              envFrom:
+                - configMapRef:
+                    name: {{ include "compliance-agent.fullname" . }}
+                {{- if .Values.secret.create }}
+                - secretRef:
+                    name: {{ include "compliance-agent.fullname" . }}
+                {{- end }}
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            # Writable scratch dir so readOnlyRootFilesystem can stay true.
+            - name: tmp
+              emptyDir: {}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

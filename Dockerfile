@@ -12,7 +12,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY src/ src/
 
 # Non-root user
-RUN useradd --create-home agent
+RUN useradd --create-home agent && chmod -R a+rX /app/src
 USER agent
 
 ENTRYPOINT ["python", "-m", "src.main"]

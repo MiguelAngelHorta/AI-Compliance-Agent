@@ -1,0 +1,92 @@
+# Default values — tuned for a local Kind demo.
+# Production / EKS overrides live in values-production.yaml.
+
+image:
+  repository: compliance-agent
+  tag: latest
+  # Kind loads the image locally, so never pull from a registry.
+  pullPolicy: IfNotPresent
+
+# CronJob schedule — every 6 hours.
+schedule: "0 */6 * * *"
+concurrencyPolicy: Forbid
+successfulJobsHistoryLimit: 3
+failedJobsHistoryLimit: 3
+# Kill a hung run after 10 minutes.
+activeDeadlineSeconds: 600
+restartPolicy: OnFailure
+backoffLimit: 2
+
+# How the agent runs. These map directly to src.main CLI flags.
+agent:
+  scanners: ["iam", "s3", "ec2"]
+  reason: true
+  act: true
+  # SAFE DEFAULT: dry-run. Set live=true only when you want real changes.
+  live: false
+  model: haiku          # haiku | sonnet
+  output: summary       # summary | json
+  mask: true            # mask resource identifiers in GitHub escalations
+
+aws:
+  region: us-east-1
+  # Local Kind has no IAM role, so static creds come from the Secret below.
+  # On EKS this is left empty and IRSA is used instead (see values-production.yaml).
+
+github:
+  # Set true and provide a token (via the Secret) to escalate CRITICAL findings.
+  enabled: false
+  repo: ""              # e.g. "MiguelAngelHorta/AI-Compliance-Agent"
+
+# Secret creation is OPT-IN and intended for LOCAL demos only.
+# NEVER commit real values here. Pass them at install time, e.g.:
+#   helm install ... --set secret.create=true \
+#     --set secret.awsAccessKeyId=... --set secret.awsSecretAccessKey=... \
+#     --set secret.maskSalt=$(openssl rand -hex 16)
+# On EKS, leave secret.create=false and use IRSA for AWS auth.
+secret:
+  create: false
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
+  githubToken: ""
+  maskSalt: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  # EKS IRSA: set annotations.eks\.amazonaws\.com/role-arn here.
+  annotations: {}
+
+# Restrict pod egress to DNS + HTTPS only (enough for AWS APIs, Bedrock,
+# GitHub, and Pushgateway). No ingress is needed for a batch job.
+networkPolicy:
+  enabled: true
+
+# Optional metrics push to Prometheus Pushgateway (wired in a later step).
+metrics:
+  enabled: false
+  pushgatewayUrl: ""    # e.g. http://prometheus-pushgateway.monitoring:9091
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Hardened pod/container security context (matches the "security tool" ethos).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

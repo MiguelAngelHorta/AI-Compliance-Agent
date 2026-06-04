@@ -1,0 +1,14 @@
+apiVersion: v2
+name: compliance-agent
+description: AI-powered security compliance agent that scans AWS infra, reasons with Claude (Bedrock), and auto-remediates or escalates findings.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - security
+  - compliance
+  - aws
+  - bedrock
+  - cronjob
+maintainers:
+  - name: Miguel Horta
