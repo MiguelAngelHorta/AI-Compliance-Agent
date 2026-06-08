@@ -1,462 +1,113 @@
-# AI Security Compliance Agent — Project Plan
+# AI-Powered AWS Compliance Auditor
 
-## Overview
+[![CI](https://github.com/MiguelAngelHorta/AI-Compliance-Agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/MiguelAngelHorta/AI-Compliance-Agent/actions/workflows/ci.yaml)
+![Python](https://img.shields.io/badge/python-3.12-blue)
 
-An autonomous security compliance agent that continuously scans AWS infrastructure, evaluates findings against compliance frameworks using Claude (AWS Bedrock) with tool use, and takes action — auto-remediating low-risk issues, escalating high-risk findings to GitHub Issues, and reporting posture trends through a React dashboard.
+An AI-powered AWS compliance auditor that scans IAM, S3, and EC2, then reasons about each finding with Claude (via Amazon Bedrock tool use) — mapping it to CIS v8 / NIST 800-53 / SOC 2 controls and scoring its contextual risk. A deterministic, auditable policy then routes each finding: escalating critical ones to GitHub Issues with masked identifiers, and acknowledging or logging the rest. It runs locally as a CLI and as a hardened, scheduled CronJob on Kubernetes, exposing run metrics to Prometheus/Grafana.
 
-Runs on AWS Lambda (free tier) for production. Includes full Kubernetes manifests and local Kind cluster deployment for demonstrating container orchestration skills without ongoing cloud costs.
+Most scanners flag issues but don't reason about them — they produce noise without context, leaving an analyst to triage every finding. This tool adds a reasoning layer: Claude turns raw scan data into contextual, control-mapped assessments, and a transparent policy decides what to do with them.
 
-**Repository:** `github.com/MiguelAngelHorta/AI-Compliance-Agent`
+> Every resource name, account ID, ARN, and identifier in this README and its screenshots is a placeholder or redacted. Real values are never committed, and the auditor masks resource identifiers in all publications.
+
+**AWS scan and Bedrock AI analysis**
+
+<img width="1050" height="718" alt="AWS scan and Bedrock analysis" src="https://github.com/user-attachments/assets/b64526cb-146a-4914-9fe8-e3edd4d39c89" />
+
+**Kubernetes deployment**
+
+<img width="2596" height="1745" alt="Kubernetes deployment" src="https://github.com/user-attachments/assets/20fc9b46-46c9-4827-b932-0d94d9d552e7" />
+
+**Pushgateway metrics**
+
+<img width="1493" height="812" alt="Pushgateway metrics" src="https://github.com/user-attachments/assets/05d34fcf-625b-415b-99ab-05df22c6ba41" />
+
+**Grafana reporting**
+
+<img width="1568" height="782" alt="Grafana dashboard" src="https://github.com/user-attachments/assets/3f5ec395-7840-439f-828d-701641367c5b" />
 
 ---
 
-## Problem Statement
+## What it does
 
-Security and compliance teams spend hundreds of hours per audit cycle manually reviewing infrastructure configurations, mapping findings to control frameworks, and generating remediation tickets. Most existing tools flag issues but don't reason about them — they produce noise without context, requiring human analysts to triage every finding.
+For each scan cycle the auditor:
 
-This project builds an agent that closes the loop: discover, reason, decide, act, and report — with Claude providing the reasoning layer that transforms raw scan data into contextual compliance decisions.
+1. **Scans** IAM, S3, and EC2 with read-only `boto3` calls and classifies findings by type and severity.
+2. **Reasons** about each finding with Claude (Bedrock), which maps it to CIS v8 / NIST 800-53 / SOC 2 controls, scores its real risk in context, and proposes a remediation.
+3. **Acts** via a deterministic, auditable policy: escalates critical findings to GitHub Issues with masked identifiers, and acknowledges or logs the rest. No infrastructure is modified. **Dry-run by default.**
+4. **Reports** run metrics to Prometheus (via Pushgateway) for Grafana dashboarding.
+
+The LLM does the judgment (control mapping, contextual risk scoring, remediation guidance); a transparent severity-based policy makes the routing decision. That separation is deliberate — for a tool that takes action on security findings, you want the decision logic to be deterministic and auditable, not model-driven.
+
+---
+
+## Highlights
+
+- **LLM-driven assessment** — Claude maps each finding to controls, scores its contextual risk, and recommends a remediation through Bedrock tool use (`map_to_controls`, `score_risk`, `recommend_remediation`, `log_assessment`).
+- **Control mapping** across CIS Controls v8, NIST 800-53, and SOC 2.
+- **Safe by default** — dry-run and identifier masking are on unless explicitly disabled; the auditor only escalates and logs, it does not change your infrastructure.
+- **Identifier masking** — resource names, ARNs, account IDs, and instance/SG IDs are replaced with deterministic, non-reversible aliases before anything leaves the tool.
+- **Production-style Kubernetes deployment** — Helm chart, scheduled CronJob, hardened non-root pod, NetworkPolicy, IRSA-ready ServiceAccount.
+- **Runtime security + observability** — Trivy Operator scans the workload; Prometheus + Grafana visualize run metrics.
+- **Tested and linted** — `pytest` + `moto`, with `ruff` and `mypy` enforced in CI.
 
 ---
 
 ## Architecture
 
-### Production (Lambda — free tier)
-
 ```
-EventBridge (every 6 hours)
-        │
-        ▼
-┌──────────────────────────────────────────────────────────┐
-│  Lambda Function (Python 3.12)                           │
-│                                                          │
-│  Scanner ──▶ Reasoning Engine ──▶ Action Executor        │
-│  (boto3)     (Claude + Tools)     (Remediate/Escalate)   │
-└──────┬───────────────┬────────────────────┬──────────────┘
-       │               │                    │
-       ▼               ▼                    ▼
-  ┌──────────┐  ┌────────────┐   ┌───────────────────┐
-  │ AWS APIs │  │ Bedrock    │   │ DynamoDB           │
-  │ IAM, S3  │  │ Claude     │   │ Findings + history │
-  │ EC2, RDS │  │ Haiku      │   └─────────┬─────────┘
-  └──────────┘  └────────────┘        ┌────┴────┐
-                                      ▼         ▼
-                                ┌─────────┐ ┌──────────┐
-                                │ GitHub  │ │ React    │
-                                │ Issues  │ │ Dashboard│
-                                └─────────┘ └──────────┘
-```
-
-### Local Kubernetes (Kind — zero cost)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Kind Cluster (local)                                       │
-│                                                             │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │ Namespace: compliance-agent                            │ │
-│  │                                                        │ │
-│  │  ┌──────────────┐  ┌──────────┐  ┌─────────────────┐  │ │
-│  │  │ CronJob      │  │ ConfigMap│  │ ServiceAccount  │  │ │
-│  │  │ Agent pod    │  │ Config   │  │ IRSA-ready      │  │ │
-│  │  │ (every 6h)   │  │ values   │  │ annotations     │  │ │
-│  │  └──────────────┘  └──────────┘  └─────────────────┘  │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                                                             │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │ Namespace: monitoring                                  │ │
-│  │  ┌────────────┐  ┌────────┐  ┌──────────────────────┐ │ │
-│  │  │ Prometheus │  │ Grafana│  │ Trivy Operator       │ │ │
-│  │  └────────────┘  └────────┘  └──────────────────────┘ │ │
-│  └────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+                    ┌─────────────────────────────────────────────┐
+   schedule         │  Compliance pipeline (Python 3.12)          │
+   (CronJob)──────► │                                             │
+                    │  Scanner ─► Reasoning Engine ─► Policy/Act   │
+                    │  (boto3)    (Claude / Bedrock)   (escalate/  │
+                    │     │           │                log)        │
+                    └─────┼───────────┼──────────────────┼─────────┘
+                          ▼           ▼                   ▼
+                    ┌──────────┐ ┌──────────┐   ┌──────────────────┐
+                    │ AWS APIs │ │ Bedrock  │   │ GitHub Issues     │
+                    │ IAM/S3/  │ │ Claude   │   │ (masked, critical)│
+                    │ EC2      │ │ Haiku    │   └──────────────────┘
+                    └──────────┘ └──────────┘            │
+                                                  metrics ▼
+                                          Pushgateway ─► Prometheus ─► Grafana
 ```
 
 ---
 
-## Tech Stack
+## Quick start
 
-| Component              | Technology                                              |
-|------------------------|---------------------------------------------------------|
-| Agent runtime          | Python 3.12, boto3, pydantic                            |
-| AI reasoning           | Claude Haiku via AWS Bedrock (tool use)                  |
-| Production deploy      | AWS Lambda + EventBridge (free tier)                     |
-| K8s demo               | Kind (local), Helm chart, CronJob, IRSA-ready manifests |
-| Container              | Docker, ECR (free tier)                                  |
-| Security scanning      | Trivy (CI pipeline + Trivy Operator in Kind)             |
-| Infrastructure as Code | Terraform (Lambda + DynamoDB + optional EKS module)      |
-| CI/CD                  | GitHub Actions (lint, test, build, scan, deploy)         |
-| Data store             | DynamoDB on-demand (free tier)                           |
-| Escalation             | GitHub Issues API, Slack webhook                                  |
-| Dashboard              | React + Recharts, deployed to S3 + CloudFront            |
-| Testing                | pytest, moto (AWS mocking), integration tests            |
-| Monitoring (local)     | Prometheus + Grafana on Kind cluster                     |
+Prerequisites: Python 3.12, AWS credentials with read access (e.g. the managed `SecurityAudit` policy), and Bedrock model access for Claude Haiku enabled in your region.
 
----
+```bash
+git clone https://github.com/MiguelAngelHorta/AI-Compliance-Agent.git
+cd AI-Compliance-Agent
+python -m venv venv && source venv/bin/activate
+pip install -e .
 
-## Cost Estimate (Monthly)
-
-| Service                     | Cost                                    |
-|-----------------------------|-----------------------------------------|
-| Lambda (4 invocations/day)  | $0 (free tier: 1M requests/month)       |
-| EventBridge                 | $0 (free tier)                          |
-| DynamoDB on-demand          | $0 (free tier: 25 GB, 25 RCU/WCU)      |
-| Bedrock (Claude Haiku)      | $1-3 (use Haiku for scans, Sonnet for complex only) |
-| ECR                         | $0 (free tier: 500 MB)                  |
-| S3 + CloudFront (dashboard) | $0-1                                    |
-| Kind cluster                | $0 (runs on your laptop)                |
-| **Total**                   | **$1-4/month**                          |
-
----
-
-## Data Model (DynamoDB)
-
-### Findings Table
-
-| Attribute         | Type   | Description                                    |
-|-------------------|--------|------------------------------------------------|
-| finding_id (PK)   | String | UUID                                           |
-| scan_timestamp     | String | ISO 8601 scan time                             |
-| resource_type      | String | iam_policy, s3_bucket, security_group, etc.    |
-| resource_arn       | String | Full ARN of the resource                       |
-| finding_type       | String | overpermissive, unencrypted, public_access, etc.|
-| risk_score         | String | critical, high, medium, low                    |
-| control_mappings   | List   | CIS 1.16, NIST AC-6, SOC2 CC6.1, etc.         |
-| claude_reasoning   | String | Full reasoning chain from Claude                |
-| remediation        | String | Recommended fix                                |
-| action_taken       | String | auto_remediated, issue_created, slack_sent, none|
-| action_details     | Map    | GitHub issue URL, remediation command, etc.      |
-| status             | String | open, remediated, escalated, acknowledged      |
-
-### Posture History Table
-
-| Attribute          | Type   | Description                                    |
-|--------------------|--------|------------------------------------------------|
-| date (PK)          | String | YYYY-MM-DD                                     |
-| total_findings     | Number | Count of all findings                          |
-| critical_count     | Number | Findings by severity                           |
-| high_count         | Number |                                                |
-| medium_count       | Number |                                                |
-| low_count          | Number |                                                |
-| auto_remediated    | Number | Actions taken automatically                    |
-| escalated          | Number | Tickets created                                |
-| compliance_score   | Number | 0-100 weighted score                           |
-
----
-
-## Claude Tool Definitions
-
-The agent gives Claude these tools via Bedrock's tool use API. Claude decides which to call based on the findings.
-
-### Discovery Tools (read-only)
-- `list_iam_policies` — All IAM policies with permission statements
-- `get_iam_policy_details` — Deep dive on a specific policy (attached entities, last used)
-- `list_s3_buckets` — Bucket configs (encryption, public access, versioning)
-- `list_security_groups` — Inbound/outbound rules for all security groups
-- `list_rds_instances` — RDS configs (encryption, public access, backup retention)
-- `list_lambda_functions` — Lambda configs (runtime, timeout, IAM role)
-
-### Analysis Tools
-- `map_to_controls` — Maps a finding to CIS/NIST/SOC2 controls
-- `check_blast_radius` — Returns what depends on a given resource
-- `get_historical_findings` — Past findings for the same resource
-
-### Action Tools
-- `remediate_s3_encryption` — Enables default encryption on an S3 bucket
-- `remediate_s3_public_access` — Enables S3 Block Public Access
-- `restrict_security_group` — Removes overly permissive inbound rules
-- `create_github_issue` — Creates ticket with finding details and remediation steps
-- `send_slack_alert` — Posts finding summary to Slack
-- `log_decision` — Records reasoning chain and action to DynamoDB
-
----
-
-## Agentic Decision Logic
-
-```
-For each finding:
-  1. Claude receives the raw finding + resource context
-  2. Claude calls map_to_controls to identify violated frameworks
-  3. Claude calls check_blast_radius to understand impact
-  4. Claude calls get_historical_findings to check if recurring
-  5. Claude assigns risk_score based on all context
-  6. Decision:
-     - LOW risk + clear fix → call remediation tool (auto-fix)
-     - MEDIUM risk → send_slack_alert with context for human review
-     - HIGH/CRITICAL risk → create_github_issue with full reasoning
-  7. Claude calls log_decision with full reasoning chain
+# Read-only scan — no changes, no AI
+python -m src.main --scan --output summary
 ```
 
-Claude is not following a hardcoded if/else tree. It receives the tools and the finding, and reasons about which tools to call and in what order. The prompt gives it the decision framework as guidance, but Claude can deviate if context warrants it.
+Add reasoning and actions as you go (actions are dry-run unless `--live` is passed):
+
+```bash
+python -m src.main --scan --reason --act --output summary
+```
+
+To escalate critical findings to GitHub Issues, set `GITHUB_REPO` and `GITHUB_TOKEN`, and set `MASK_SALT` so masked aliases are stable and unguessable:
+
+```bash
+export GITHUB_REPO="owner/repo"
+export GITHUB_TOKEN="<scoped-token>"
+export MASK_SALT="$(openssl rand -hex 16)"
+python -m src.main --scan --reason --act --live --output summary
+```
 
 ---
 
-## Project Phases
-
-### Phase 1: Foundation (Week 1-2)
-**Goal:** Working scanner with CI and tests. No cloud deployment yet.
-
-**Tasks:**
-- [ ] Create GitHub repo with README, LICENSE, .gitignore
-- [ ] Set up Python project: pyproject.toml, ruff, mypy, pytest
-- [ ] Create project structure:
-  ```
-  ai-compliance-agent/
-  ├── src/
-  │   ├── scanner/
-  │   │   ├── __init__.py
-  │   │   ├── iam.py
-  │   │   ├── s3.py
-  │   │   ├── ec2.py
-  │   │   ├── rds.py
-  │   │   └── lambda_scanner.py
-  │   ├── models/
-  │   │   ├── __init__.py
-  │   │   └── finding.py
-  │   └── main.py
-  ├── tests/
-  │   ├── test_scanner_iam.py
-  │   ├── test_scanner_s3.py
-  │   └── conftest.py
-  ├── Dockerfile
-  ├── pyproject.toml
-  └── README.md
-  ```
-- [ ] Implement scanner modules using boto3:
-  - IAM: wildcard actions, no MFA, unused keys (90+ days), overpermissive roles
-  - S3: unencrypted, public access, no versioning, no logging
-  - EC2: security groups with 0.0.0.0/0 on ports 22, 3389, 3306
-  - RDS: unencrypted, public access, no automated backups
-  - Lambda: deprecated runtimes, overpermissive roles
-- [ ] Create Finding pydantic model
-- [ ] Write unit tests using moto (AWS mock library)
-- [ ] GitHub Actions CI: ruff → mypy → pytest on every push
-
-**Deliverable:** `python -m src.main --scan` prints findings JSON from a real AWS account.
-
----
-
-### Phase 2: Claude Reasoning Engine (Week 3-4)
-**Goal:** Claude evaluates findings, maps to controls, scores risk, recommends remediation.
-
-**Tasks:**
-- [ ] Create src/reasoner/ module
-- [ ] Define Claude tool schemas (JSON) for discovery and analysis tools
-- [ ] Implement Bedrock client wrapper with retry logic and cost tracking
-- [ ] Build reasoning prompt with CIS v8 and NIST 800-53 control references
-- [ ] Implement tool use loop:
-  - Send finding to Claude with tools
-  - Execute tool calls, return results
-  - Claude returns assessment with risk_score, control_mappings, remediation
-- [ ] Use Claude Haiku for routine findings, escalate to Sonnet for complex ones
-- [ ] Create DynamoDB client for storing assessed findings
-- [ ] Write integration tests with recorded Bedrock responses
-- [ ] Add token/cost tracking per scan cycle
-
-**Deliverable:** `python -m src.main --scan --reason` scans, reasons with Claude, stores results in DynamoDB.
-
----
-
-### Phase 3: Agentic Actions (Week 5-6)
-**Goal:** Claude decides and executes actions autonomously.
-
-**Tasks:**
-- [ ] Create src/actions/ module
-- [ ] Implement remediation functions:
-  - remediate_s3_encryption (enable AES-256)
-  - remediate_s3_public_access (enable Block Public Access)
-  - restrict_security_group (remove 0.0.0.0/0 on non-web ports)
-- [ ] Implement escalation functions:
-  - create_github_issue via GitHub Issues API
-  - send_slack_alert via Slack webhook
-- [ ] Add action tools to Claude's tool set
-- [ ] Create audit log in DynamoDB for every action
-- [ ] Add --dry-run flag (logs planned actions without executing)
-- [ ] Write tests for each action function
-
-**Deliverable:** `python -m src.main --scan --reason --act` runs the full agent loop. `--dry-run` previews actions.
-
----
-
-### Phase 4: Deploy to Lambda + Kubernetes Demo (Week 7-8)
-**Goal:** Production agent on Lambda (free). Local Kubernetes demo proving K8s skills.
-
-#### Lambda (production, free tier)
-- [ ] Package agent as Lambda function (zip or container image)
-- [ ] Terraform modules:
-  - `infra/lambda/` — Lambda function, EventBridge rule (every 6 hours), IAM role
-  - `infra/dynamodb/` — Findings and posture history tables
-  - `infra/ecr/` — Container registry
-- [ ] Terraform remote state backend (S3 + DynamoDB state locking)
-- [ ] GitHub Actions: build → Trivy scan → push to ECR → deploy Lambda
-
-#### Kubernetes (local demo, zero cost)
-- [ ] Write Dockerfile (multi-stage build)
-- [ ] Create Helm chart:
-  ```
-  helm/compliance-agent/
-  ├── Chart.yaml
-  ├── values.yaml
-  ├── values-production.yaml      # EKS-ready values with IRSA
-  ├── templates/
-  │   ├── cronjob.yaml            # Agent runs every 6 hours
-  │   ├── configmap.yaml          # Scan targets, thresholds, dry-run toggle
-  │   ├── serviceaccount.yaml     # IRSA annotations for EKS
-  │   ├── networkpolicy.yaml      # Restrict pod egress
-  │   └── hpa.yaml                # Horizontal pod autoscaler (for EKS)
-  ```
-- [ ] Create Kind cluster setup script:
-  ```
-  scripts/
-  ├── kind-setup.sh               # Create cluster, install Trivy Operator
-  ├── kind-deploy.sh              # Build image, load to Kind, helm install
-  └── kind-teardown.sh            # Clean up
-  ```
-- [ ] Install Trivy Operator on Kind for runtime vulnerability scanning
-- [ ] Install Prometheus + Grafana on Kind for monitoring demo
-- [ ] Create Grafana dashboard JSON showing agent metrics (scan count, findings, actions)
-- [ ] Add Terraform EKS module (optional, documented but not deployed by default):
-  ```
-  infra/eks/                      # Optional production K8s deployment
-  ├── main.tf                     # EKS cluster, node group, OIDC
-  ├── irsa.tf                     # IAM Roles for Service Accounts
-  └── variables.tf
-  ```
-- [ ] Document both deployment paths in README:
-  - Quick start: `terraform apply` (Lambda, free)
-  - Kubernetes demo: `./scripts/kind-setup.sh && ./scripts/kind-deploy.sh`
-  - Production K8s: `cd infra/eks && terraform apply` (costs ~$100/month)
-- [ ] Record terminal demo (asciinema or GIF) showing:
-  - Kind cluster creation
-  - Helm install
-  - CronJob running
-  - kubectl logs showing scan results
-  - Trivy scan results
-  - Grafana dashboard
-
-**Deliverable:** Agent runs on Lambda (free) in production. Local Kind cluster demonstrates K8s deployment, Helm charts, Trivy scanning, and Prometheus/Grafana monitoring.
-
----
-
-### Phase 5: Dashboard (Week 9-10)
-**Goal:** React frontend showing compliance posture and agent activity.
-
-**Tasks:**
-- [ ] Create React app with Vite + TypeScript + Tailwind
-- [ ] Pages:
-  - Overview: compliance score gauge, 90-day trend line, findings by severity, actions breakdown
-  - Findings: sortable/filterable table, click to expand Claude's reasoning
-  - Actions: timeline of agent activity (remediated, escalated, pending)
-  - Controls: heatmap of CIS/NIST/SOC2 control coverage
-- [ ] API layer: Lambda function reading from DynamoDB, returns JSON
-- [ ] Deploy to S3 + CloudFront (same pattern as cloud resume)
-- [ ] Terraform for dashboard infra
-- [ ] GitHub Actions: build React → deploy to S3 → invalidate CloudFront
-
-**Deliverable:** Live dashboard showing real scan data.
-
----
-
-### Phase 6: Polish and Launch (Week 11-12)
-**Goal:** Production-ready, documented, presentable.
-
-**Tasks:**
-- [ ] CloudWatch alarms on Lambda failures and DynamoDB throttling
-- [ ] Bedrock cost circuit breaker (stop if > $X/day)
-- [ ] README with:
-  - Architecture diagrams (Lambda + K8s)
-  - Quick start guide
-  - Demo GIF/video of both Lambda and Kind deployments
-  - Cost comparison table (Lambda vs EKS)
-- [ ] Security hardening:
-  - Least-privilege IAM (separate scanner read role from action write role)
-  - Secrets in AWS Secrets Manager
-  - Network policies in K8s manifests
-- [ ] Write LinkedIn post explaining the project
-- [ ] Record 2-minute demo video
-
-**Deliverable:** Public repo, live dashboard, LinkedIn post, demo video.
-
----
-
-## What This Proves on Your Resume
-
-| Skill                        | Evidence                                              |
-|------------------------------|-------------------------------------------------------|
-| Python backend engineering   | Scanner, reasoner, action modules with tests          |
-| AI / agentic architecture    | Claude tool use, autonomous decision loop             |
-| Kubernetes                   | Helm chart, CronJob, IRSA, NetworkPolicy, Trivy Operator, Prometheus, Grafana — all running on local Kind |
-| Docker                       | Multi-stage Dockerfile, ECR, image scanning           |
-| Terraform                    | Lambda, DynamoDB, ECR, S3/CloudFront, optional EKS    |
-| CI/CD                        | GitHub Actions: lint, test, build, Trivy scan, deploy |
-| Testing                      | pytest, moto, integration tests, 80%+ coverage        |
-| Security tooling             | Trivy (CI + runtime), least-privilege IAM, NetworkPolicy |
-| Data modeling                | DynamoDB schema design, posture trending              |
-| React frontend               | Dashboard with charts, tables, drill-downs            |
-| GRC domain expertise         | CIS, NIST, SOC2 control mapping built into the agent  |
-| Observability                | Prometheus metrics, Grafana dashboards, CloudWatch    |
-
----
-
-## Kubernetes Skills Demonstrated (Zero Cost)
-
-The Kind cluster proves all the K8s concepts a hiring manager would look for:
-
-- **CronJob scheduling** — agent runs on a cron schedule, same as EKS
-- **Helm charts** — parameterized deployment with values files for dev/prod
-- **ServiceAccount + IRSA annotations** — ready to swap in real AWS IAM roles on EKS
-- **ConfigMap** — externalized config (scan targets, thresholds, dry-run mode)
-- **NetworkPolicy** — pod egress restricted to AWS APIs and Slack/GitHub
-- **Trivy Operator** — runtime vulnerability scanning of running containers
-- **Prometheus + Grafana** — metrics collection and dashboarding
-- **HPA template** — horizontal pod autoscaler ready for EKS (dormant on Kind)
-- **Multi-environment Helm values** — values.yaml (local) vs values-production.yaml (EKS)
-
-The README documents the EKS upgrade path: swap Kind for EKS, enable IRSA, apply values-production.yaml. The manifests are production-ready — the only difference is where the cluster runs.
-
----
-
-## Success Metrics
-
-| Metric                         | Target                        |
-|--------------------------------|-------------------------------|
-| Scan coverage                  | IAM, S3, EC2, RDS, Lambda    |
-| Control frameworks mapped      | CIS v8, NIST 800-53, SOC 2   |
-| Auto-remediation rate          | 30%+ of low-risk findings     |
-| Scan-to-action time            | < 5 minutes per finding       |
-| CI pipeline                    | Lint, test, build, scan, deploy |
-| Test coverage                  | > 80%                         |
-| Monthly cost                   | < $5                          |
-| K8s concepts demonstrated      | 9 (CronJob, Helm, IRSA, ConfigMap, NetworkPolicy, Trivy, Prometheus, Grafana, HPA) |
-
----
-
-## Risk Mitigation
-
-| Risk                              | Mitigation                                    |
-|-----------------------------------|-----------------------------------------------|
-| Auto-remediation breaks something | Dry-run mode default; auto-fix only for reversible actions |
-| Bedrock costs spike               | Use Haiku by default; Sonnet only for complex findings; token budget per cycle |
-| Kind cluster issues on different OS| Document setup for macOS, Linux, Windows; provide Docker Desktop fallback |
-| Claude hallucinates control mappings | Include control definitions in prompt; validate against lookup table |
-| Scope creep                       | Each phase ships independently; dashboard (Phase 5) is cuttable |
-
----
-
-## Timeline Summary
-
-| Week  | Phase                        | Key Deliverable                          |
-|-------|------------------------------|------------------------------------------|
-| 1-2   | Foundation                   | Working scanner with CI and tests        |
-| 3-4   | Claude reasoning engine      | Findings assessed and stored in DynamoDB |
-| 5-6   | Agentic actions              | Auto-remediation and GitHub Issues escalation |
-| 7-8   | Lambda + K8s demo            | Free Lambda deploy + local Kind cluster  |
-| 9-10  | Dashboard                    | React compliance dashboard live          |
-| 11-12 | Polish + launch              | README, demo video, LinkedIn post        |
 ## Demo
 
-The agent runs in three stages — **scan → reason → act**. Each stage can be run on its own or chained together. The walkthrough below is a representative run against a test AWS account.
-
-> All resource names, account identifiers, IDs, and paths in this section are placeholders. Real values are never committed to this repo.
+The auditor runs in three stages — **scan → reason → act**. Each can run on its own or chained.
 
 ### 1. Scan
 
@@ -495,7 +146,7 @@ Severity: {'critical': 3, 'high': 1, 'medium': 0, 'low': 6, 'info': 0}
 
 ### 2. Reason
 
-Each finding is sent to Claude (via Amazon Bedrock) with a set of tools. The model maps the finding to compliance controls, scores its real risk in context, and proposes a remediation — then logs the full reasoning chain.
+Each finding is sent to Claude (Bedrock) with a set of tools. The model maps the finding to compliance controls, scores its real risk in context, proposes a remediation, and logs the full reasoning chain.
 
 ```console
 $ python -m src.main --scan --reason --output summary
@@ -506,11 +157,6 @@ $ python -m src.main --scan --reason --output summary
     → score_risk            critical  (internet-facing, 6 controls violated, likely public data)
     → recommend_remediation Enable S3 Block Public Access — set all four block settings to true
     → log_assessment        logged
-  [3/10] Assessing: Bucket 'example-static-assets' does not have versioning enabled...
-    → map_to_controls       CIS-3.4 · NIST-CM-6 · SOC2-CC8.1
-    → score_risk            low  (not internet-facing, single control, no sensitive data)
-    → recommend_remediation Enable versioning to protect against accidental deletion
-    → log_assessment        logged
   ...
 ```
 
@@ -518,31 +164,28 @@ Findings are mapped against **CIS Controls v8**, **NIST 800-53**, and **SOC 2** 
 
 ### 3. Act
 
-Low-risk, reversible issues are auto-remediated. Critical findings are escalated to GitHub Issues for human review. Everything else is acknowledged and logged. Actions run in **dry-run mode by default** — `--live` is required to make any real change.
+**Critical** findings are escalated to GitHub Issues with masked identifiers; everything else is acknowledged and logged. The auditor does not modify any AWS resources — it reviews and reports. Actions run in **dry-run mode by default**; `--live` is required before any GitHub issue is actually opened.
 
 ```console
 $ python -m src.main --scan --reason --act --live
 
 [*] Executing actions (LIVE) on 10 findings...
   [1/10] Bucket 'app.example.com' does not fully block public access
-    🎫 Escalated to GitHub issue #12  (critical — manual review required)
-  [2/10] Bucket 'app.example.com' has no access logging
+    🎫 Escalated: [CRITICAL] Bucket '<resource:6f3a9c21>' ... (masked) → GitHub issue
+  [2/10] Security group 'launch-wizard-1' exposes SSH (port 22) to 0.0.0.0/0
+    🎫 Escalated: [CRITICAL] Security group '<resource:1a5d44a2>' ... (masked) → GitHub issue
+  [3/10] Bucket 'example-static-assets' has no access logging
     📋 Acknowledged: no_logging
-  [3/10] Bucket 'example-static-assets' does not have versioning enabled
-    ✅ Auto-remediated: no_versioning
   ...
 [*] Actions complete
 ```
 
-| Finding type | Default action |
+| Severity | Action |
 |---|---|
-| `no_versioning` | ✅ Auto-remediate (enable versioning) |
-| `unencrypted` | ✅ Auto-remediate (enable SSE) |
-| `public_access` | 🎫 Escalate to GitHub Issues |
-| `open_port` | 🎫 Escalate to GitHub Issues |
-| `no_logging` | 📋 Acknowledge + log |
+| `critical` | 🎫 Escalate to GitHub Issues (masked) |
+| `high` / `medium` / `low` | 📋 Acknowledge + log — no changes made |
 
-> **Note:** `--live` performs real changes and opens real GitHub issues that include the affected resource identifiers. Run it against a test account, and point escalations at a **private** repo or tracker so resource names are not published.
+> **Note:** `--live` opens real GitHub issues. Masking is on by default so resource names aren't published; run against a test account and keep `MASK_SALT` set.
 
 ### Flags
 
@@ -554,4 +197,124 @@ $ python -m src.main --scan --reason --act --live
 --scanners iam s3 ec2  Limit which scanners run
 --model haiku|sonnet   Choose the Bedrock model
 --output json|summary  Output format
+--no-mask              Do not mask identifiers in escalations (private trackers only)
 ```
+
+---
+
+## Deploying on Kubernetes
+
+It ships as a hardened container and runs as a scheduled **CronJob**. A Helm chart packages the workload, and a local [Kind](https://kind.sigs.k8s.io/) setup brings up the full stack — runtime vulnerability scanning (Trivy Operator) and observability (Prometheus + Grafana) — at zero cost.
+
+### Quick start (local, via Kind)
+
+Prerequisites: `docker`, `kind`, `kubectl`, `helm`.
+
+```bash
+# 1. Cluster + Trivy Operator + Prometheus/Grafana + Pushgateway
+./scripts/kind-setup.sh
+
+# 2. Build, load into Kind, and deploy (dry-run mode)
+export AWS_ACCESS_KEY_ID=...        # a least-privilege (SecurityAudit) key
+export AWS_SECRET_ACCESS_KEY=...
+export MASK_SALT=$(openssl rand -hex 16)
+./scripts/kind-deploy.sh
+
+# 3. Tear down
+./scripts/kind-teardown.sh
+```
+
+The chart runs **dry-run with masking on by default** — no GitHub issues and no real identifiers leave the cluster until you opt in.
+
+### What gets deployed
+
+| Component | Namespace | Purpose |
+|---|---|---|
+| `compliance-agent` CronJob | `compliance` | The scan → reason → act pipeline on a schedule |
+| Trivy Operator | `trivy-system` | Continuous vulnerability + misconfig scanning of the workload |
+| kube-prometheus-stack | `monitoring` | Prometheus + Grafana |
+| Prometheus Pushgateway | `monitoring` | Receives metrics from the short-lived CronJob pods |
+
+### Observability
+
+After each run it pushes metrics to the Pushgateway, which Prometheus scrapes and Grafana visualizes (dashboard shown above). Import `monitoring/grafana-dashboard.json` (Grafana → Dashboards → Import).
+
+| Metric | Type | Labels |
+|---|---|---|
+| `compliance_findings_total` | gauge | — |
+| `compliance_findings_by_severity` | gauge | `severity` |
+| `compliance_findings_by_action` | gauge | `action` |
+| `compliance_scan_duration_seconds` | gauge | — |
+| `compliance_last_run_timestamp_seconds` | gauge | — |
+
+The manifests are EKS-ready: the chart supports IRSA via a ServiceAccount annotation, and `values-production.yaml` documents the production overrides. The only difference between the Kind demo and EKS is where the cluster runs.
+
+---
+
+## How it works
+
+**Scanners** (`src/scanner/`) use `boto3` to enumerate resources and emit typed `Finding` models (`pydantic`): IAM (wildcard actions, missing MFA, stale keys), S3 (public access, missing encryption/versioning/logging), and EC2 (security groups open to `0.0.0.0/0` on sensitive ports).
+
+**Reasoning** (`src/reasoner/`) calls Claude Haiku through Bedrock's **Converse API** with a cross-region inference profile. Claude is given four assessment tools — `map_to_controls`, `score_risk`, `recommend_remediation`, `log_assessment` — and calls them to map the finding to controls, score its risk, and recommend a remediation. Control mappings are validated against an in-code lookup table to keep the model from inventing control IDs.
+
+**Actions** (`src/actions/`) are decided by a deterministic policy keyed on the assessed severity: critical findings are escalated to GitHub Issues, everything else is acknowledged and logged. The LLM informs the severity; it doesn't choose or execute the action, and no AWS resource is modified. Before anything is posted to GitHub, **`src/masking/`** replaces resource names, ARNs, account IDs, and `sg-/i-/vol-`-style IDs with deterministic, non-reversible aliases (salted via `MASK_SALT`). Local console output stays unmasked for the operator.
+
+**Metrics** (`src/metrics/`) push per-run gauges to a Pushgateway when `PUSHGATEWAY_URL` is set — best-effort, and never able to fail the run.
+
+---
+
+## Security posture
+
+The project is built to pass the kind of review it performs:
+
+- **No secrets in the repo.** Tokens and credentials are read from the environment; `.env`, `*.tfstate`, and `*.tfvars` are git-ignored. The Helm Secret is opt-in and local-demo-only.
+- **Identifier masking** on all GitHub escalations, on by default.
+- **Read-only and dry-run by default**; the auditor never changes AWS resources, and `--live`/`--no-mask` are explicit opt-ins.
+- **Least-privilege IAM** (read-only `SecurityAudit` for scanning).
+- **Hardened container**: non-root, `readOnlyRootFilesystem`, all Linux capabilities dropped, `RuntimeDefault` seccomp.
+- **NetworkPolicy** denies ingress and restricts egress to DNS + HTTPS (plus the Pushgateway port when metrics are enabled).
+
+---
+
+## Tech stack
+
+| Component | Technology |
+|---|---|
+| Runtime | Python 3.12, boto3, pydantic |
+| AI reasoning | Claude Haiku via AWS Bedrock (Converse API, tool use) |
+| Container | Docker (multi-stage, non-root) |
+| Kubernetes | Helm chart, CronJob, Kind, IRSA-ready manifests, NetworkPolicy |
+| Runtime scanning | Trivy Operator |
+| Observability | Prometheus + Grafana (Pushgateway) |
+| Escalation | GitHub Issues API |
+| CI | GitHub Actions (ruff, mypy, pytest) |
+| Testing | pytest, moto |
+
+---
+
+## Local development
+
+```bash
+pip install -e ".[dev]"
+ruff check src/ tests/
+mypy src/
+pytest -q
+```
+
+CI runs the same lint → type-check → test pipeline on every push.
+
+---
+
+## Possible extensions
+
+Directions this could be taken further (not implemented):
+
+- **Automated remediation of reversible findings** — apply safe fixes (e.g. enabling S3 versioning or default encryption) automatically behind the dry-run guard, instead of only escalating and logging.
+- **Production deployment on AWS Lambda** — Terraform for the function, an EventBridge schedule, IAM role, and ECR, with a build → scan → push → deploy pipeline.
+- **DynamoDB-backed posture history** — persist findings and daily posture for trend analysis and a compliance score over time.
+- **A React dashboard** (S3/CloudFront) reading that history — severity trends, findings drill-down, and a control-coverage heatmap.
+- **Additional scanners** (RDS, Lambda) and **Slack escalation**.
+
+---
+
+*This is a personal project and is not affiliated with or endorsed by AWS or Anthropic.*
